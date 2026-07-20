@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Cross-compile Raspberry Pi and Linux binaries
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.version=${GITHUB_REF_NAME}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -ldflags "$LDFLAGS" -o dist/plexmatch-generator-linux-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "$LDFLAGS" -o dist/plexmatch-generator-linux-armv7 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -ldflags "$LDFLAGS" -o dist/plexmatch-generator-linux-armv6 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64       go build -ldflags "$LDFLAGS" -o dist/plexmatch-generator-linux-amd64 .
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes
