@@ -1,0 +1,12 @@
+# Build output
+/bin/
+
+# Logs
+plexmatch.log
+
+# OS / editor cruft
+.DS_Store
+*.swp
+
+# Local agent instructions (not part of the project)
+CLAUDE.md
