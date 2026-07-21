@@ -12,7 +12,7 @@ func TestReporterPlainOutput(t *testing.T) {
 
 	var out, file bytes.Buffer
 	fixed := time.Date(2026, 7, 21, 17, 0, 0, 0, time.UTC)
-	r := NewWithClock(&out, &file, false, func() time.Time { return fixed })
+	r := NewWithClock(&out, &file, false, false, func() time.Time { return fixed })
 
 	r.Start("ObiWan", "https://x:32400/")
 	r.Wrote("About Time")
@@ -48,10 +48,31 @@ func TestReporterColorEmitsANSI(t *testing.T) {
 
 	var out bytes.Buffer
 	fixed := time.Unix(0, 0).UTC()
-	r := NewWithClock(&out, nil, true, func() time.Time { return fixed })
+	r := NewWithClock(&out, nil, true, false, func() time.Time { return fixed })
 
 	r.Wrote("X")
 	if !strings.Contains(out.String(), "\033[32m") {
 		t.Errorf("expected a green ANSI code, got %q", out.String())
+	}
+}
+
+func TestReporterDryRunOutput(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	fixed := time.Unix(0, 0).UTC()
+	r := NewWithClock(&out, nil, false, true, func() time.Time { return fixed })
+
+	r.Wrote("About Time")
+	r.Done()
+
+	got := out.String()
+	for _, want := range []string{"~ About Time", "1 to write"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dry-run output missing %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "✓") {
+		t.Errorf("dry-run should not use the ✓ symbol:\n%s", got)
 	}
 }

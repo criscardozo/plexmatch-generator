@@ -11,6 +11,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"plexmatch-generator/internal/cli"
 	"plexmatch-generator/internal/generator"
@@ -34,5 +36,10 @@ func main() {
 		}
 	}
 
-	os.Exit(generator.Run(context.Background(), opts))
+	// Cancel the run on Ctrl+C or SIGTERM (e.g. systemd stop) so in-flight
+	// requests and the login wait unwind cleanly.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := generator.Run(ctx, opts)
+	stop()
+	os.Exit(code)
 }

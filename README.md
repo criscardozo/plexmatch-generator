@@ -137,6 +137,9 @@ You can still pass everything explicitly (handy for automated setups):
 ./plexmatch-generator -u http://192.168.0.3:32400 -t ABCD12345
 ```
 
+Tip: add `--dry-run` (or `-n`) the first time to preview exactly what would be
+written, without touching any files.
+
 ### Authentication
 
 You don't need to find your token by hand. On the first run (when no `--token`
@@ -177,6 +180,7 @@ without a prompt, or pass `--url` directly.
 | `--show` | `-s` | Only process this item (by title). Repeatable. Case-insensitive. |
 | `--seasonprocessing` | `-sp` | Also write a `.plexmatch` in every season folder. |
 | `--nooverwrite` | `-no` | Don't overwrite folders that already have a `.plexmatch`. |
+| `--dry-run` | `-n` | Report what would be written without writing anything. |
 | `--pagesize` | `-ps` | Number of items per page when walking a library (default: 20). |
 | `--log` | `-l` | In addition to the console, write the log to `<dir>/plexmatch.log`. The directory must exist. |
 | `--version` | | Print the version and exit. |

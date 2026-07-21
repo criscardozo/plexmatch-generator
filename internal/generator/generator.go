@@ -22,7 +22,7 @@ import (
 
 // Run executes a full generation pass and returns the process exit code.
 func Run(ctx context.Context, opts *cli.Options) int {
-	rep, closeLog, err := newReporter(opts.LogPath)
+	rep, closeLog, err := newReporter(opts.LogPath, opts.DryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not open log file: %v\n", err)
 		return 1
@@ -55,6 +55,10 @@ func Run(ctx context.Context, opts *cli.Options) int {
 	// A single top-level error handler mirrors the original's global try/catch:
 	// any API or write failure aborts the run with exit code 1.
 	if err := r.run(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			rep.Note("cancelled")
+			return 130
+		}
 		rep.Fatal(err.Error())
 		return 1
 	}
@@ -63,8 +67,17 @@ func Run(ctx context.Context, opts *cli.Options) int {
 	return 0
 }
 
+// plexClient is the read-only slice of the Plex API the generator needs.
+// *plex.Client satisfies it; tests use a stub.
+type plexClient interface {
+	Libraries(ctx context.Context) ([]plex.Library, error)
+	LibraryItems(ctx context.Context, libraryID string, start, size int) ([]plex.Metadata, error)
+	Metadata(ctx context.Context, ratingKey string) ([]plex.Metadata, error)
+	Children(ctx context.Context, ratingKey string) ([]plex.Metadata, error)
+}
+
 type runner struct {
-	client *plex.Client
+	client plexClient
 	rep    *ui.Reporter
 	opts   *cli.Options
 }
@@ -225,8 +238,10 @@ func (r *runner) writeMatch(folder string, info plexmatch.Info) error {
 		return nil
 	}
 
-	if err := plexmatch.Write(target, info); err != nil {
-		return fmt.Errorf("writing %q: %w", target, err)
+	if !r.opts.DryRun {
+		if err := plexmatch.Write(target, info); err != nil {
+			return fmt.Errorf("writing %q: %w", target, err)
+		}
 	}
 
 	if info.IsSeason {
@@ -440,7 +455,7 @@ func readLine() string {
 
 // newReporter builds the console reporter, opening <logPath>/plexmatch.log for
 // plain, timestamped mirroring when a log path is given.
-func newReporter(logPath string) (*ui.Reporter, func(), error) {
+func newReporter(logPath string, dryRun bool) (*ui.Reporter, func(), error) {
 	closer := func() {}
 	var file io.Writer
 
@@ -453,7 +468,7 @@ func newReporter(logPath string) (*ui.Reporter, func(), error) {
 		closer = func() { _ = f.Close() }
 	}
 
-	return ui.New(os.Stdout, file, useColor()), closer, nil
+	return ui.New(os.Stdout, file, useColor(), dryRun), closer, nil
 }
 
 // useColor reports whether ANSI colour should be emitted: only when stdout is a

@@ -4,8 +4,58 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
+
+func TestClientRetriesTransientServerError(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "busy", http.StatusServiceUnavailable) // transient 503
+			return
+		}
+		_, _ = w.Write([]byte(`{"MediaContainer":{"Directory":[{"key":"1","type":"movie","title":"Movies"}]}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL+"/", "t")
+	c.retryWait = 0 // no delay in the test
+
+	libs, err := c.Libraries(context.Background())
+	if err != nil {
+		t.Fatalf("Libraries() error = %v", err)
+	}
+	if len(libs) != 1 {
+		t.Fatalf("got %d libraries after retry, want 1", len(libs))
+	}
+	if calls.Load() != 2 {
+		t.Errorf("server called %d times, want 2 (1 failure + 1 retry)", calls.Load())
+	}
+}
+
+func TestClientDoesNotRetryClientError(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "nope", http.StatusUnauthorized) // 401 is not retryable
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL+"/", "t")
+	c.retryWait = 0
+
+	if _, err := c.Libraries(context.Background()); err == nil {
+		t.Fatal("Libraries() error = nil, want an error on HTTP 401")
+	}
+	if calls.Load() != 1 {
+		t.Errorf("server called %d times, want 1 (no retry on 4xx)", calls.Load())
+	}
+}
 
 func TestClientLibraries(t *testing.T) {
 	t.Parallel()

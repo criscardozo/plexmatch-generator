@@ -35,6 +35,7 @@ type Options struct {
 	Relogin          bool
 	ServerName       string
 	Logout           bool
+	DryRun           bool
 }
 
 // stringSlice collects a repeatable string flag (e.g. -lib TV -lib Movies).
@@ -58,7 +59,7 @@ func Parse(args []string) (*Options, error) {
 		token, url, logPath, serverName            string
 		pageSize                                   int
 		noOverwrite, seasonProcessing, showVersion bool
-		relogin, logout                            bool
+		relogin, logout, dryRun                    bool
 		roots, libraries, shows                    stringSlice
 	)
 
@@ -76,6 +77,8 @@ func Parse(args []string) (*Options, error) {
 	fs.IntVar(&pageSize, "ps", 20, "shorthand for --pagesize")
 	fs.BoolVar(&noOverwrite, "nooverwrite", false, "skip folders that already contain a .plexmatch file")
 	fs.BoolVar(&noOverwrite, "no", false, "shorthand for --nooverwrite")
+	fs.BoolVar(&dryRun, "dry-run", false, "report what would be written without writing anything")
+	fs.BoolVar(&dryRun, "n", false, "shorthand for --dry-run")
 	fs.Var(&libraries, "library", "restrict to a library by name (repeatable, case-insensitive)")
 	fs.Var(&libraries, "lib", "shorthand for --library")
 	fs.Var(&shows, "show", "restrict to a media item by title (repeatable, case-insensitive)")
@@ -124,6 +127,7 @@ func Parse(args []string) (*Options, error) {
 		Relogin:          relogin,
 		ServerName:       serverName,
 		Logout:           logout,
+		DryRun:           dryRun,
 	}, nil
 }
 
@@ -176,6 +180,7 @@ Options:
                           Also write a .plexmatch in every season folder. This is
                           already automatic for shows using non-default ordering.
   -no,  --nooverwrite     Do not overwrite folders that already have a .plexmatch.
+  -n,   --dry-run         Report what would be written without writing anything.
   -ps,  --pagesize <n>    Items requested per page when scanning a library (default 20).
   -l,   --log <dir>       Also append logs to <dir>/plexmatch.log (dir must exist).
         --version         Print the version and exit.

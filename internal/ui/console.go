@@ -25,10 +25,11 @@ var separator = strings.Repeat("─", 42)
 // Reporter prints progress to a terminal and, optionally, to a log file. It
 // also tallies what happened for the final summary.
 type Reporter struct {
-	out   io.Writer
-	file  io.Writer // optional; nil when no --log is set
-	color bool
-	now   func() time.Time
+	out    io.Writer
+	file   io.Writer // optional; nil when no --log is set
+	color  bool
+	dryRun bool
+	now    func() time.Time
 
 	started time.Time
 	written int
@@ -37,14 +38,16 @@ type Reporter struct {
 }
 
 // New builds a Reporter writing to out (coloured when color is true) and, when
-// file is non-nil, mirroring plain timestamped lines to it.
-func New(out, file io.Writer, color bool) *Reporter {
-	return NewWithClock(out, file, color, time.Now)
+// file is non-nil, mirroring plain timestamped lines to it. When dryRun is
+// true, "wrote" events are reported as "would write" and no summary implies a
+// change on disk.
+func New(out, file io.Writer, color, dryRun bool) *Reporter {
+	return NewWithClock(out, file, color, dryRun, time.Now)
 }
 
 // NewWithClock is like New but takes an explicit clock, for tests.
-func NewWithClock(out, file io.Writer, color bool, now func() time.Time) *Reporter {
-	return &Reporter{out: out, file: file, color: color, now: now, started: now()}
+func NewWithClock(out, file io.Writer, color, dryRun bool, now func() time.Time) *Reporter {
+	return &Reporter{out: out, file: file, color: color, dryRun: dryRun, now: now, started: now()}
 }
 
 // Start prints the header naming the server being processed.
@@ -57,23 +60,37 @@ func (r *Reporter) Start(serverName, url string) {
 	if serverName != "" {
 		fmt.Fprintf(r.out, "  %s\n", r.paint(codeDim, url))
 	}
+	if r.dryRun {
+		fmt.Fprintf(r.out, "  %s\n", r.paint(codeDim, "(dry run — no files are written)"))
+	}
 	fmt.Fprintf(r.out, "  %s\n\n", r.paint(codeDim, separator))
 	r.logf("using server %q (%s)", serverName, url)
 }
 
-// Wrote records a successful top-level .plexmatch write.
+// Wrote records a top-level .plexmatch write (or, in dry-run, a would-write).
 func (r *Reporter) Wrote(title string) {
 	r.written++
-	fmt.Fprintf(r.out, "  %s %s\n", r.paint(codeGreen, "✓"), title)
-	r.logf("wrote %q", title)
+	symbol, code, verb := r.writeStyle()
+	fmt.Fprintf(r.out, "  %s %s\n", r.paint(code, symbol), title)
+	r.logf("%s %q", verb, title)
 }
 
-// WroteSeason records a successful per-season .plexmatch write.
+// WroteSeason records a per-season .plexmatch write (or would-write in dry-run).
 func (r *Reporter) WroteSeason(title string, season int) {
 	r.written++
+	symbol, code, verb := r.writeStyle()
 	tail := r.paint(codeDim, fmt.Sprintf("· season %d", season))
-	fmt.Fprintf(r.out, "  %s %s %s\n", r.paint(codeGreen, "✓"), title, tail)
-	r.logf("wrote %q season %d", title, season)
+	fmt.Fprintf(r.out, "  %s %s %s\n", r.paint(code, symbol), title, tail)
+	r.logf("%s %q season %d", verb, title, season)
+}
+
+// writeStyle returns the symbol, colour and log verb for a write event,
+// depending on whether this is a dry run.
+func (r *Reporter) writeStyle() (symbol, code, verb string) {
+	if r.dryRun {
+		return "~", codeCyan, "would write"
+	}
+	return "✓", codeGreen, "wrote"
 }
 
 // Skip records a folder that was intentionally not written (filtered out, or
@@ -117,9 +134,14 @@ func (r *Reporter) Done() {
 		issueColor = codeRed
 	}
 
+	verb := "written"
+	if r.dryRun {
+		verb = "to write"
+	}
+
 	segments := []string{
 		r.paint(codeBold, "Done"),
-		r.paint(codeGreen, fmt.Sprintf("%d written", r.written)),
+		r.paint(codeGreen, fmt.Sprintf("%d %s", r.written, verb)),
 		r.paint(codeDim, fmt.Sprintf("%d skipped", r.skipped)),
 		r.paint(issueColor, fmt.Sprintf("%d %s", r.issues, plural(r.issues, "issue", "issues"))),
 		r.paint(codeDim, elapsed.String()),
@@ -127,7 +149,7 @@ func (r *Reporter) Done() {
 
 	fmt.Fprintf(r.out, "  %s\n", r.paint(codeDim, separator))
 	fmt.Fprintf(r.out, "  %s\n\n", strings.Join(segments, r.paint(codeDim, " · ")))
-	r.logf("summary: %d written, %d skipped, %d issues, %s", r.written, r.skipped, r.issues, elapsed)
+	r.logf("summary: %d %s, %d skipped, %d issues, %s", r.written, verb, r.skipped, r.issues, elapsed)
 }
 
 func (r *Reporter) paint(code, s string) string {
