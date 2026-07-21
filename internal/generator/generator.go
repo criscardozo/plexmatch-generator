@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,11 +17,12 @@ import (
 	"plexmatch-generator/internal/plex"
 	"plexmatch-generator/internal/plexauth"
 	"plexmatch-generator/internal/plexmatch"
+	"plexmatch-generator/internal/ui"
 )
 
 // Run executes a full generation pass and returns the process exit code.
 func Run(ctx context.Context, opts *cli.Options) int {
-	logger, closeLog, err := newLogger(opts.LogPath)
+	rep, closeLog, err := newReporter(opts.LogPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not open log file: %v\n", err)
 		return 1
@@ -31,47 +31,42 @@ func Run(ctx context.Context, opts *cli.Options) int {
 
 	if opts.Logout {
 		if err := plexauth.ClearCredentials(); err != nil {
-			logger.Error("Could not clear the cached Plex token", "error", err)
+			rep.Fatal(fmt.Sprintf("could not clear the cached Plex token: %v", err))
 			return 1
 		}
-		logger.Info("Cached Plex token cleared.")
+		fmt.Println("Cached Plex token cleared.")
 		return 0
 	}
 
-	baseURL, token, err := resolveCredentials(ctx, opts, logger)
+	baseURL, token, serverName, err := resolveCredentials(ctx, opts, rep)
 	if err != nil {
-		logger.Error("Could not obtain Plex credentials", "error", err)
+		rep.Fatal(fmt.Sprintf("could not obtain Plex credentials: %v", err))
 		return 1
 	}
 
+	rep.Start(serverName, baseURL)
+
 	r := &runner{
 		client: plex.New(baseURL, token),
-		log:    logger,
+		rep:    rep,
 		opts:   opts,
 	}
 
 	// A single top-level error handler mirrors the original's global try/catch:
 	// any API or write failure aborts the run with exit code 1.
 	if err := r.run(ctx); err != nil {
-		logger.Error("A fatal error occurred", "error", err)
+		rep.Fatal(err.Error())
 		return 1
 	}
 
-	logger.Info("Processing complete.")
+	rep.Done()
 	return 0
 }
 
 type runner struct {
 	client *plex.Client
-	log    *slog.Logger
+	rep    *ui.Reporter
 	opts   *cli.Options
-}
-
-// processingResult accumulates counts for one library.
-type processingResult struct {
-	processed int
-	skipped   int
-	success   bool
 }
 
 func (r *runner) run(ctx context.Context) error {
@@ -85,57 +80,39 @@ func (r *runner) run(ctx context.Context) error {
 
 	for _, library := range libraries {
 		if len(r.opts.LibraryNames) > 0 && !containsFold(r.opts.LibraryNames, library.Title) {
-			r.log.Info("Skipping library (not in allow list)", "library", library.Title)
 			continue
 		}
-
-		res, err := r.processLibrary(ctx, library)
-		if err != nil {
+		if err := r.processLibrary(ctx, library); err != nil {
 			return err
-		}
-		switch {
-		case !res.success:
-			r.log.Error("No results for library", "library", library.Title, "type", library.Type, "id", library.ID)
-		case res.skipped > 0:
-			r.log.Info("Library processed", "library", library.Title, "processed", res.processed, "skipped", res.skipped)
-		default:
-			r.log.Info("Library processed", "library", library.Title, "processed", res.processed)
 		}
 	}
 	return nil
 }
 
 // processLibrary pages through a library and processes every item.
-func (r *runner) processLibrary(ctx context.Context, library plex.Library) (processingResult, error) {
-	res := processingResult{success: true}
-
+func (r *runner) processLibrary(ctx context.Context, library plex.Library) error {
 	for start := 0; ; start += r.opts.ItemsPerPage {
 		items, err := r.client.LibraryItems(ctx, library.ID, start, r.opts.ItemsPerPage)
 		if err != nil {
-			return res, err
+			return err
 		}
 		if len(items) == 0 {
-			// No items at all means the library came back empty.
 			if start == 0 {
-				res.success = false
+				r.rep.Warn(fmt.Sprintf("library %q returned no results", library.Title))
 			}
-			break
+			return nil
 		}
 
 		for _, item := range items {
 			if len(r.opts.ShowNames) > 0 && !containsFold(r.opts.ShowNames, item.Title) {
-				r.log.Info("Skipping item (not in allow list)", "title", item.Title)
-				res.skipped++
+				r.rep.Skip()
 				continue
 			}
-			res.processed++
-
 			if err := r.processItem(ctx, library, item); err != nil {
-				return res, err
+				return err
 			}
 		}
 	}
-	return res, nil
 }
 
 // processItem writes the top-level .plexmatch for an item and, for shows, may
@@ -146,14 +123,14 @@ func (r *runner) processItem(ctx context.Context, library plex.Library, item ple
 		return err
 	}
 	if len(infos) == 0 {
-		r.log.Error("No location info found for item", "title", item.Title, "id", item.RatingKey)
+		r.rep.Warn(fmt.Sprintf("%s — no location info", item.Title))
 		return nil
 	}
 
 	for _, info := range infos {
 		paths, ok := mediaFolders(library, info)
 		if !ok {
-			r.log.Warn("No media found for item", "title", item.Title)
+			r.rep.Warn(fmt.Sprintf("%s — no media found", item.Title))
 			continue
 		}
 
@@ -235,16 +212,16 @@ func (r *runner) processSeasons(ctx context.Context, item plex.Metadata) error {
 }
 
 // writeMatch writes a .plexmatch into folder, honouring --nooverwrite and
-// skipping (with a log line) folders that do not exist on this host.
+// reporting folders that do not exist on this host.
 func (r *runner) writeMatch(folder string, info plexmatch.Info) error {
 	if !dirExists(folder) {
-		r.log.Error("Folder is missing or invalid", "path", folder)
+		r.rep.Fail(fmt.Sprintf("%s — folder missing: %s", info.Title, folder))
 		return nil
 	}
 
 	target := filepath.Join(folder, plexmatch.FileName)
 	if r.opts.NoOverwrite && fileExists(target) {
-		r.log.Info("Skipping existing .plexmatch (overwrite disabled)", "title", info.Title)
+		r.rep.Skip()
 		return nil
 	}
 
@@ -253,9 +230,9 @@ func (r *runner) writeMatch(folder string, info plexmatch.Info) error {
 	}
 
 	if info.IsSeason {
-		r.log.Info(".plexmatch (season) written", "title", info.Title, "season", info.Season, "path", folder)
+		r.rep.WroteSeason(info.Title, info.Season)
 	} else {
-		r.log.Info(".plexmatch written", "title", info.Title)
+		r.rep.Wrote(info.Title)
 	}
 	return nil
 }
@@ -336,18 +313,18 @@ func normaliseURL(u string) (string, bool) {
 	return "", false
 }
 
-// resolveCredentials produces the base URL and token to use, obtaining the
-// token from the command line, the cache, or an interactive Plex login, and
-// discovering the server automatically when --url is not given.
-func resolveCredentials(ctx context.Context, opts *cli.Options, log *slog.Logger) (baseURL, token string, err error) {
+// resolveCredentials produces the base URL, token and server name to use,
+// obtaining the token from the command line, the cache, or an interactive Plex
+// login, and discovering the server automatically when --url is not given.
+func resolveCredentials(ctx context.Context, opts *cli.Options, rep *ui.Reporter) (baseURL, token, serverName string, err error) {
 	creds, err := plexauth.LoadCredentials()
 	if err != nil {
-		log.Warn("Ignoring unreadable credentials cache", "error", err)
+		rep.Note(fmt.Sprintf("ignoring unreadable credentials cache: %v", err))
 		creds = plexauth.Credentials{}
 	}
 	if creds.ClientID == "" {
 		if creds.ClientID, err = plexauth.NewClientID(); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 	}
 	auth := plexauth.NewClient(creds.ClientID)
@@ -359,36 +336,35 @@ func resolveCredentials(ctx context.Context, opts *cli.Options, log *slog.Logger
 		token = creds.Token
 	default:
 		if token, err = runLoginFlow(ctx, auth); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		creds.Token = token
 		if err := plexauth.SaveCredentials(creds); err != nil {
-			log.Warn("Could not cache Plex credentials", "error", err)
+			rep.Note(fmt.Sprintf("could not cache Plex credentials: %v", err))
 		}
 	}
 
 	if opts.URL != "" {
 		base, ok := normaliseURL(opts.URL)
 		if !ok {
-			return "", "", errors.New("the provided Plex URL is invalid; it must start with http:// or https://")
+			return "", "", "", errors.New("the provided Plex URL is invalid; it must start with http:// or https://")
 		}
-		return base, token, nil
+		return base, token, "", nil
 	}
 
 	servers, err := auth.DiscoverServers(ctx, token)
 	if err != nil {
-		return "", "", fmt.Errorf("discovering Plex servers: %w", err)
+		return "", "", "", fmt.Errorf("discovering Plex servers: %w", err)
 	}
 	chosen, err := pickServer(servers, opts.ServerName)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	base, ok := normaliseURL(chosen.BaseURL)
 	if !ok {
-		return "", "", fmt.Errorf("server %q reported an unusable URL %q", chosen.Name, chosen.BaseURL)
+		return "", "", "", fmt.Errorf("server %q reported an unusable URL %q", chosen.Name, chosen.BaseURL)
 	}
-	log.Info("Using Plex server", "name", chosen.Name, "url", base)
-	return base, token, nil
+	return base, token, chosen.Name, nil
 }
 
 func validCachedToken(ctx context.Context, auth *plexauth.Client, token string) bool {
@@ -462,21 +438,33 @@ func readLine() string {
 	return strings.TrimSpace(line)
 }
 
-// newLogger writes to stdout and, when logPath is set, also appends to
-// <logPath>plexmatch.log.
-func newLogger(logPath string) (*slog.Logger, func(), error) {
-	writers := []io.Writer{os.Stdout}
+// newReporter builds the console reporter, opening <logPath>/plexmatch.log for
+// plain, timestamped mirroring when a log path is given.
+func newReporter(logPath string) (*ui.Reporter, func(), error) {
 	closer := func() {}
+	var file io.Writer
 
 	if logPath != "" {
 		f, err := os.OpenFile(filepath.Join(logPath, "plexmatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return nil, nil, err
 		}
-		writers = append(writers, f)
+		file = f
 		closer = func() { _ = f.Close() }
 	}
 
-	handler := slog.NewTextHandler(io.MultiWriter(writers...), &slog.HandlerOptions{Level: slog.LevelInfo})
-	return slog.New(handler), closer, nil
+	return ui.New(os.Stdout, file, useColor()), closer, nil
+}
+
+// useColor reports whether ANSI colour should be emitted: only when stdout is a
+// terminal and NO_COLOR is unset (https://no-color.org).
+func useColor() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
