@@ -15,7 +15,7 @@ type containerResponse struct {
 // Library is a single Plex library section (movies, shows, music, ...).
 type Library struct {
 	ID    string `json:"key"`
-	Type  string `json:"type"`  // "movie", "show" or "artist"
+	Type  string `json:"type"` // "movie", "show" or "artist"
 	Title string `json:"title"`
 }
 
@@ -23,14 +23,22 @@ type Library struct {
 // field is populated for every endpoint; unused ones stay at their zero value.
 type Metadata struct {
 	RatingKey    string     `json:"ratingKey"`
-	Type         string     `json:"type"`  // e.g. "movie", "show", "season", "episode"
+	Type         string     `json:"type"` // e.g. "movie", "show", "season", "episode"
 	Title        string     `json:"title"`
 	Year         int        `json:"year"`
-	Guid         string     `json:"guid"`
+	Guid         string     `json:"guid"`  // primary GUID, e.g. plex://movie/<id>
 	Index        int        `json:"index"` // season number for seasons
 	ShowOrdering string     `json:"showOrdering"`
 	Location     []Location `json:"Location"` // folder paths (shows/music)
 	Media        []Media    `json:"Media"`    // file parts (movies/episodes)
+
+	// Plex also returns a "Guid" array of alternate IDs (imdb/tmdb/tvdb). We
+	// don't use it, but it MUST be captured here: without an exact-tag field
+	// for "Guid", encoding/json's case-insensitive matching unmarshals that
+	// array into the "guid" string above and fails.
+	AltGUIDs []struct {
+		ID string `json:"id"`
+	} `json:"Guid"`
 }
 
 // Location is a folder path as Plex knows it.

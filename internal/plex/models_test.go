@@ -1,6 +1,32 @@
 package plex
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+// Plex returns both a "guid" string (the primary GUID) and a "Guid" array of
+// alternate IDs. This guards against the array clobbering the string under
+// encoding/json's case-insensitive field matching.
+func TestMetadataDecodingKeepsPrimaryGuid(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"MediaContainer":{"Metadata":[{
+		"ratingKey":"1727","title":"Heat","year":1995,
+		"guid":"plex://movie/5d776b59",
+		"Guid":[{"id":"imdb://tt0113277"},{"id":"tmdb://949"}]
+	}]}}`
+
+	var r containerResponse
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		t.Fatalf("Unmarshal error = %v", err)
+	}
+
+	got := r.MediaContainer.Metadata[0]
+	if got.Guid != "plex://movie/5d776b59" {
+		t.Errorf("Guid = %q, want the primary plex:// guid", got.Guid)
+	}
+}
 
 func TestMetadataIsNonDefaultOrdering(t *testing.T) {
 	t.Parallel()

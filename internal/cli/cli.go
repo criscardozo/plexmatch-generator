@@ -55,11 +55,11 @@ func Parse(args []string) (*Options, error) {
 	fs.Usage = func() {} // help text is printed by us on flag.ErrHelp
 
 	var (
-		token, url, logPath, serverName                     string
-		pageSize                                            int
-		noOverwrite, seasonProcessing, showVersion          bool
-		relogin, logout                                     bool
-		roots, libraries, shows                             stringSlice
+		token, url, logPath, serverName            string
+		pageSize                                   int
+		noOverwrite, seasonProcessing, showVersion bool
+		relogin, logout                            bool
+		roots, libraries, shows                    stringSlice
 	)
 
 	// Each option has a long form and a short form; both write to the same
