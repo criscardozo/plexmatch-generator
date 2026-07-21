@@ -11,10 +11,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"plexmatch-generator/internal/cli"
 	"plexmatch-generator/internal/plex"
+	"plexmatch-generator/internal/plexauth"
 	"plexmatch-generator/internal/plexmatch"
 )
 
@@ -27,28 +29,23 @@ func Run(ctx context.Context, opts *cli.Options) int {
 	}
 	defer closeLog()
 
-	// Prompt for anything not supplied on the command line.
-	if opts.Token == "" {
-		fmt.Println("Please enter your Plex token:")
-		opts.Token = readLine()
-	}
-	if strings.TrimSpace(opts.Token) == "" {
-		logger.Error("The provided Plex token is invalid.")
-		return 1
+	if opts.Logout {
+		if err := plexauth.ClearCredentials(); err != nil {
+			logger.Error("Could not clear the cached Plex token", "error", err)
+			return 1
+		}
+		logger.Info("Cached Plex token cleared.")
+		return 0
 	}
 
-	if opts.URL == "" {
-		fmt.Println("Please enter your Plex server URL:")
-		opts.URL = readLine()
-	}
-	baseURL, ok := normaliseURL(opts.URL)
-	if !ok {
-		logger.Error("The provided Plex URL is invalid; it must start with http:// or https://")
+	baseURL, token, err := resolveCredentials(ctx, opts, logger)
+	if err != nil {
+		logger.Error("Could not obtain Plex credentials", "error", err)
 		return 1
 	}
 
 	r := &runner{
-		client: plex.New(baseURL, opts.Token),
+		client: plex.New(baseURL, token),
 		log:    logger,
 		opts:   opts,
 	}
@@ -339,10 +336,128 @@ func normaliseURL(u string) (string, bool) {
 	return "", false
 }
 
+// resolveCredentials produces the base URL and token to use, obtaining the
+// token from the command line, the cache, or an interactive Plex login, and
+// discovering the server automatically when --url is not given.
+func resolveCredentials(ctx context.Context, opts *cli.Options, log *slog.Logger) (baseURL, token string, err error) {
+	creds, err := plexauth.LoadCredentials()
+	if err != nil {
+		log.Warn("Ignoring unreadable credentials cache", "error", err)
+		creds = plexauth.Credentials{}
+	}
+	if creds.ClientID == "" {
+		if creds.ClientID, err = plexauth.NewClientID(); err != nil {
+			return "", "", err
+		}
+	}
+	auth := plexauth.NewClient(creds.ClientID)
+
+	switch {
+	case opts.Token != "":
+		token = opts.Token // an explicit token always wins and is not cached
+	case !opts.Relogin && creds.Token != "" && validCachedToken(ctx, auth, creds.Token):
+		token = creds.Token
+	default:
+		if token, err = runLoginFlow(ctx, auth); err != nil {
+			return "", "", err
+		}
+		creds.Token = token
+		if err := plexauth.SaveCredentials(creds); err != nil {
+			log.Warn("Could not cache Plex credentials", "error", err)
+		}
+	}
+
+	if opts.URL != "" {
+		base, ok := normaliseURL(opts.URL)
+		if !ok {
+			return "", "", errors.New("the provided Plex URL is invalid; it must start with http:// or https://")
+		}
+		return base, token, nil
+	}
+
+	servers, err := auth.DiscoverServers(ctx, token)
+	if err != nil {
+		return "", "", fmt.Errorf("discovering Plex servers: %w", err)
+	}
+	chosen, err := pickServer(servers, opts.ServerName)
+	if err != nil {
+		return "", "", err
+	}
+	base, ok := normaliseURL(chosen.BaseURL)
+	if !ok {
+		return "", "", fmt.Errorf("server %q reported an unusable URL %q", chosen.Name, chosen.BaseURL)
+	}
+	log.Info("Using Plex server", "name", chosen.Name, "url", base)
+	return base, token, nil
+}
+
+func validCachedToken(ctx context.Context, auth *plexauth.Client, token string) bool {
+	ok, err := auth.ValidateToken(ctx, token)
+	return err == nil && ok
+}
+
+// runLoginFlow drives the plex.tv device-link flow, printing the URL the user
+// must open and blocking until the PIN is authorised.
+func runLoginFlow(ctx context.Context, auth *plexauth.Client) (string, error) {
+	pin, err := auth.CreatePIN(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Println()
+	fmt.Println("To authorise this device, open the following URL in any browser,")
+	fmt.Println("sign in to your Plex account and approve the request:")
+	fmt.Println()
+	fmt.Println("    " + auth.AuthURL(pin))
+	fmt.Println()
+	fmt.Println("Waiting for authorisation...")
+
+	token, err := auth.PollPIN(ctx, pin)
+	if err != nil {
+		return "", err
+	}
+	fmt.Println("Authorised. The token has been cached for future runs.")
+	return token, nil
+}
+
+// pickServer chooses which discovered server to use: by name if given, the only
+// one if there is a single server, otherwise it prompts.
+func pickServer(servers []plexauth.Server, name string) (plexauth.Server, error) {
+	if len(servers) == 0 {
+		return plexauth.Server{}, errors.New("no Plex servers found for this account; pass --url explicitly")
+	}
+
+	if name != "" {
+		for _, s := range servers {
+			if strings.EqualFold(s.Name, name) {
+				return s, nil
+			}
+		}
+		return plexauth.Server{}, fmt.Errorf("no server named %q found for this account", name)
+	}
+
+	if len(servers) == 1 {
+		return servers[0], nil
+	}
+
+	fmt.Println("Multiple Plex servers found:")
+	for i, s := range servers {
+		fmt.Printf("  [%d] %s (%s)\n", i+1, s.Name, s.BaseURL)
+	}
+	fmt.Print("Choose a server number (or use --server-name / --url to avoid this prompt): ")
+
+	choice := readLine()
+	n, err := strconv.Atoi(choice)
+	if err != nil || n < 1 || n > len(servers) {
+		return plexauth.Server{}, fmt.Errorf("invalid server selection %q", choice)
+	}
+	return servers[n-1], nil
+}
+
 func readLine() string {
 	// ReadString returns whatever it read even on error (e.g. io.EOF when stdin
-	// is closed), and the downstream token/URL validation rejects empty input,
-	// so a read error here needs no separate handling.
+	// is closed), and the caller validates the result, so a read error here
+	// needs no separate handling.
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return strings.TrimSpace(line)
 }

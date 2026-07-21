@@ -32,6 +32,9 @@ type Options struct {
 	LibraryNames     []string
 	ShowNames        []string
 	SeasonProcessing bool
+	Relogin          bool
+	ServerName       string
+	Logout           bool
 }
 
 // stringSlice collects a repeatable string flag (e.g. -lib TV -lib Movies).
@@ -52,10 +55,11 @@ func Parse(args []string) (*Options, error) {
 	fs.Usage = func() {} // help text is printed by us on flag.ErrHelp
 
 	var (
-		token, url, logPath                        string
-		pageSize                                   int
-		noOverwrite, seasonProcessing, showVersion bool
-		roots, libraries, shows                    stringSlice
+		token, url, logPath, serverName                     string
+		pageSize                                            int
+		noOverwrite, seasonProcessing, showVersion          bool
+		relogin, logout                                     bool
+		roots, libraries, shows                             stringSlice
 	)
 
 	// Each option has a long form and a short form; both write to the same
@@ -78,6 +82,9 @@ func Parse(args []string) (*Options, error) {
 	fs.Var(&shows, "s", "shorthand for --show")
 	fs.BoolVar(&seasonProcessing, "seasonprocessing", false, "force writing a .plexmatch in every season folder too")
 	fs.BoolVar(&seasonProcessing, "sp", false, "shorthand for --seasonprocessing")
+	fs.BoolVar(&relogin, "relogin", false, "ignore any cached token and authenticate with Plex again")
+	fs.StringVar(&serverName, "server-name", "", "select a discovered server by name (used when --url is omitted)")
+	fs.BoolVar(&logout, "logout", false, "delete the cached Plex token and exit")
 	fs.BoolVar(&showVersion, "version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -114,6 +121,9 @@ func Parse(args []string) (*Options, error) {
 		LibraryNames:     libraries,
 		ShowNames:        shows,
 		SeasonProcessing: seasonProcessing,
+		Relogin:          relogin,
+		ServerName:       serverName,
+		Logout:           logout,
 	}, nil
 }
 
@@ -139,11 +149,23 @@ func parseRootPaths(raw []string) []RootPath {
 const helpText = `plexmatch-generator - write .plexmatch hint files for a Plex Media Server
 
 Usage:
-  plexmatch-generator --url <plex-url> --token <plex-token> [options]
+  plexmatch-generator [options]
 
-Required:
-  -u, --url <url>         Plex server URL (must start with http:// or https://)
-  -t, --token <token>     Plex authentication token (X-Plex-Token)
+On the first run, if no token is given, the tool prints a URL to authorise this
+device with your Plex account, then caches the token for next time. If no --url
+is given, it discovers your server automatically.
+
+Authentication:
+  -t,   --token <token>   Plex authentication token (X-Plex-Token). Optional;
+                          overrides the cached token when given.
+        --relogin         Ignore the cached token and authenticate again.
+        --logout          Delete the cached token and exit.
+
+Server:
+  -u,   --url <url>       Plex server URL (http:// or https://). Optional; when
+                          omitted the server is discovered from your account.
+        --server-name <n> Pick a discovered server by name (when --url is omitted
+                          and the account has more than one server).
 
 Options:
   -r,   --root <map>      Map a Plex path to a host path, "hostPath:plexPath".
@@ -158,6 +180,4 @@ Options:
   -l,   --log <dir>       Also append logs to <dir>/plexmatch.log (dir must exist).
         --version         Print the version and exit.
   -h,   --help            Show this help.
-
-If --url or --token is omitted you will be prompted for it interactively.
 `
