@@ -47,6 +47,45 @@ Guid: plex://season/602e67d4b16bd9002d5f7f
 - To **build**: [Go](https://go.dev/dl/) 1.23 or newer. You don't need Go on the
   Raspberry Pi: cross-compile and copy the binary over.
 
+## Download
+
+Prebuilt static binaries are attached to every
+[release](https://github.com/criscardozo/plexmatch-generator/releases/latest).
+Nothing else needs to be installed on the Raspberry Pi.
+
+First check your architecture:
+
+```sh
+uname -m
+```
+
+| `uname -m` | Binary to download |
+| --- | --- |
+| `aarch64` | `plexmatch-generator-linux-arm64` (Pi 3/4/5, 64-bit) |
+| `armv7l` | `plexmatch-generator-linux-armv7` (Pi 2/3, 32-bit) |
+| `armv6l` | `plexmatch-generator-linux-armv6` (Pi Zero / Pi 1) |
+| `x86_64` | `plexmatch-generator-linux-amd64` |
+
+Then download the matching binary (arm64 shown here), make it executable and run
+it:
+
+```sh
+curl -L -o plexmatch-generator \
+  https://github.com/criscardozo/plexmatch-generator/releases/latest/download/plexmatch-generator-linux-arm64
+chmod +x plexmatch-generator
+./plexmatch-generator
+```
+
+To install it system-wide so you can call it from anywhere:
+
+```sh
+sudo mv plexmatch-generator /usr/local/bin/
+plexmatch-generator --version
+```
+
+> The `releases/latest/download/...` URL always points to the newest release, so
+> the same command keeps working across versions.
+
 ## Build
 
 For the Raspberry Pi (64-bit, Pi 3/4/5 running 64-bit Raspberry Pi OS):
